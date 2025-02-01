@@ -1,13 +1,18 @@
+import base64
+import re
 import sys
+
+from Crypto.Cipher import AES
 from PyQt5.QtCore import Qt, QDateTime, QTimer, QSize, QRectF
 from PyQt5.QtPrintSupport import QPrinter, QPrintPreviewDialog, QPrintPreviewWidget
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QGroupBox, QFormLayout, QLineEdit, QDateTimeEdit, QComboBox,
                              QTextEdit, QPushButton, QTableWidget, QTableWidgetItem,
-                             QHeaderView, QStatusBar, QMessageBox, QSpinBox, QDoubleSpinBox,
+                             QHeaderView, QMessageBox, QSpinBox,
                              QCheckBox, QDialog, QLabel, QGraphicsDropShadowEffect, QMenu)
 from PyQt5.QtSql import QSqlDatabase, QSqlQuery
 from PyQt5.QtGui import QFont, QColor, QIcon, QPainter
+from Crypto.Util.Padding import pad, unpad
 
 
 class EditDialog(QDialog):
@@ -56,7 +61,7 @@ class EditDialog(QDialog):
 
         self.name_edit = QLineEdit(self.data[1])
         self.gender_combo = QComboBox()
-        self.gender_combo.addItems(["男", "女", "其他"])
+        self.gender_combo.addItems(["女", "男", "其他"])
         self.gender_combo.setCurrentText(self.data[2])
         # 继续添加其他控件...
 
@@ -64,7 +69,9 @@ class EditDialog(QDialog):
         self.age_edit = QSpinBox()
         self.age_edit.setValue(int(self.data[3]))
         self.id_edit = QLineEdit(self.data[4])
+        self.id_edit.setMaxLength(18)
         self.phone_edit = QLineEdit(self.data[5])
+        self.phone_edit.setMaxLength(11)
         self.time_edit = QDateTimeEdit(QDateTime.fromString(self.data[6], "yyyy-MM-dd HH:mm"),calendarPopup=True)
         self.service_edit = QTextEdit(self.data[7])
         self.designer_combo = QComboBox()
@@ -76,7 +83,6 @@ class EditDialog(QDialog):
         self.first_check = QCheckBox()
         self.first_check.setChecked(self.data[10] == "是")
         self.amount_edit = QLineEdit(self.data[11])
-        #self.amount_edit.setValue(float(self.data[11]))
         self.notes_edit = QTextEdit(self.data[12])
 
         # 添加所有表单行...
@@ -96,7 +102,7 @@ class EditDialog(QDialog):
         # 按钮布局
         btn_layout = QHBoxLayout()
         self.save_btn = QPushButton("保存")
-        self.save_btn.clicked.connect(self.accept)
+        self.save_btn.clicked.connect(self.on_save)
         self.cancel_btn = QPushButton("取消")
         self.cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(self.save_btn)
@@ -106,6 +112,64 @@ class EditDialog(QDialog):
         layout.addLayout(btn_layout)
         self.setLayout(layout)
 
+    def on_save(self):
+        """保存按钮点击事件"""
+        # 获取输入数据
+        name = self.name_edit.text().strip()
+        id_number = self.id_edit.text().strip()
+        phone = self.phone_edit.text().strip()
+        amount = self.amount_edit.text().strip()
+
+        # 验证输入数据
+        if not name:
+            QMessageBox.warning(self, "警告", "客户姓名不能为空！")
+            return
+        if not self.validate_id(id_number):
+            QMessageBox.warning(self, "警告", "身份证号格式错误！")
+            return
+        if not self.validate_phone(phone):
+            QMessageBox.warning(self, "警告", "请输入有效的11位手机号码！")
+            return
+        if not self.validate_amount(amount):
+            QMessageBox.warning(self, "警告", "项目金额格式错误！")
+            return
+
+        # 如果验证通过，则关闭弹窗
+        self.accept()
+
+    def validate_id(self, id_number):
+        # 身份证格式校验
+        id_pattern = re.compile(r'^[1-9]\d{5}(18|19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[0-9Xx]$')
+        if not id_pattern.match(id_number):
+            return False
+
+        # 身份证校验码验证
+        if not self.validate_chinese_id_check_digit(id_number):
+            return False
+        return True
+
+    def validate_phone(self, phone):
+        """验证手机号"""
+        pattern = re.compile(r'^1[3-9]\d{9}$')
+        if not pattern.match(phone):
+            return False
+        return True
+
+    def validate_amount(self, amount):
+        """验证金额"""
+        if amount.strip() == "":
+            return False
+        if not amount.isdigit() or float(amount) <= 0:
+            return False
+        return True
+
+    def validate_chinese_id_check_digit(self, id_number):
+        """校验身份证号码的最后一位校验码"""
+        factors = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2]
+        check_code_map = "10X98765432"
+        total = sum(int(id_number[i]) * factors[i] for i in range(17))
+        return check_code_map[total % 11] == id_number[-1].upper()
+
 
 class AppointmentSystem(QMainWindow):
     def __init__(self):
@@ -114,6 +178,7 @@ class AppointmentSystem(QMainWindow):
         self.setGeometry(400, 50, 1280, 960)
         self.setWindowIcon(QIcon("icon.png"))
         self.showMaximized()
+        self.encryption_key = b'thisisasecretkey'  # 16字节密钥（示例，实际应安全存储）
 
         # 初始化数据库
         self.init_db()
@@ -131,6 +196,18 @@ class AppointmentSystem(QMainWindow):
 
         # 初始化状态栏
         self.statusBar().showMessage("就绪 | 总预约数: 0")
+
+    def encrypt(self, plain_text):
+        cipher = AES.new(self.encryption_key, AES.MODE_ECB)
+        padded_data = pad(plain_text.encode('utf-8'), AES.block_size)
+        encrypted = cipher.encrypt(padded_data)
+        return base64.b64encode(encrypted).decode('utf-8')
+
+    def decrypt(self, cipher_text):
+        cipher = AES.new(self.encryption_key, AES.MODE_ECB)
+        encrypted_data = base64.b64decode(cipher_text)
+        decrypted = cipher.decrypt(encrypted_data)
+        return unpad(decrypted, AES.block_size).decode('utf-8')
 
     def setup_style(self):
         """设置全局样式"""
@@ -209,19 +286,19 @@ class AppointmentSystem(QMainWindow):
         self.name_input.setPlaceholderText("请输入客户姓名")
 
         self.gender_combo = QComboBox()
-        self.gender_combo.addItems(["男", "女", "其他"])
+        self.gender_combo.addItems(["女", "男", "其他"])
 
         self.age_input = QSpinBox()
         self.age_input.setRange(0, 150)
         self.age_input.setValue(25)
 
         self.id_input = QLineEdit()
-        self.id_input.setInputMask("999999999999999999;_")
-        self.id_input.setPlaceholderText("18位身份证号码")
+        self.id_input.setMaxLength(18)
+        self.id_input.setPlaceholderText("请输入18位身份证号码")
 
         self.phone_input = QLineEdit()
-        self.phone_input.setPlaceholderText("请输入联系电话")
-        self.phone_input.setInputMask("999-9999-9999;_")
+        self.phone_input.setMaxLength(11)
+        self.phone_input.setPlaceholderText("请输入11位联系电话")
 
         self.time_input = QDateTimeEdit(calendarPopup=True)
         self.time_input.setDateTime(QDateTime.currentDateTime().addSecs(3600))
@@ -345,7 +422,7 @@ class AppointmentSystem(QMainWindow):
 
         # 绘制表格内容
         labels = [
-                "客户姓名:", "性别:", "年龄:", "身份证号:", "联系电话:",
+                "ID","客户姓名:", "性别:", "年龄:", "身份证号:", "联系电话:",
             "预约时间:", "项目:", "设计总监:", "所属部门:", "首次登记:", "金额:", "备注:"
         ]
 
@@ -475,7 +552,7 @@ class AppointmentSystem(QMainWindow):
     def init_db(self):
         """初始化数据库"""
         self.db = QSqlDatabase.addDatabase("QSQLITE")
-        self.db.setDatabaseName("appointments.db")
+        self.db.setDatabaseName("qianmei.db")
 
         if not self.db.open():
             QMessageBox.critical(
@@ -486,7 +563,7 @@ class AppointmentSystem(QMainWindow):
 
         query = QSqlQuery()
         query.exec("""
-            CREATE TABLE IF NOT EXISTS appointments (
+            CREATE TABLE IF NOT EXISTS qianmei (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 customer_name TEXT NOT NULL,
                 gender TEXT NOT NULL,
@@ -499,7 +576,8 @@ class AppointmentSystem(QMainWindow):
                 department TEXT NOT NULL,
                 is_first_time INTEGER NOT NULL,
                 amount TEXT NOT NULL,
-                notes TEXT
+                notes TEXT,
+                submit_time DATETIME NOT NULL
             )
         """)
         return True
@@ -522,21 +600,24 @@ class AppointmentSystem(QMainWindow):
 
         # 输入验证
         if not name:
-            self.show_status("客户姓名不能为空！", "error")
+            QMessageBox.warning(self, "警告", "客户姓名不能为空")
             self.name_input.setFocus()
             return
-        if len(id_number) != 18:
-            self.show_status("请输入有效的18位身份证号码！", "error")
+        if not self.id_check(id_number):
+            QMessageBox.warning(self, "警告", "身份证号格式错误")
             self.id_input.setFocus()
             return
-        if len(phone.replace("-", "").strip()) != 11:
-            self.show_status("请输入有效的11位手机号码！", "error")
+        if not self.phone_check(phone):
+            QMessageBox.warning(self, "警告", "请输入有效的11位手机号码！")
             self.phone_input.setFocus()
             return
-        if int(amount) <= 0:
-            self.show_status("项目金额必须大于0！", "error")
+        if not self.amount_check(amount):
+            QMessageBox.warning(self, "警告", "项目金额格式错误！")
             self.amount_input.setFocus()
             return
+
+        id_number = self.encrypt(id_number)
+        phone = self.encrypt(phone)
 
         # 插入数据库
         query = QSqlQuery()
@@ -544,12 +625,12 @@ class AppointmentSystem(QMainWindow):
             INSERT INTO appointments 
             (customer_name, gender, age, id_number, phone,
              appointment_time, service_type, design_director, department,
-             is_first_time, amount, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             is_first_time, amount, notes, submit_time)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """)
         params = [
             name, gender, age, id_number, phone,
-            time, service, designer, dept, is_first, amount, notes
+            time, service, designer, dept, is_first, amount, notes,QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm")
         ]
         for value in params:
             query.addBindValue(value)
@@ -594,7 +675,10 @@ class AppointmentSystem(QMainWindow):
                     item = QTableWidgetItem(str(query.value(col)))
                     if col == 11:  # 金额列右对齐
                         item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                    elif col == 5 or col ==4:
+                        item = QTableWidgetItem(str(self.decrypt(query.value(col))))
                     self.appointment_table.setItem(row, col, item)
+
             self.show_status(f"找到 {self.appointment_table.rowCount()} 条结果", "info")
         else:
             self.show_status("搜索失败", "error")
@@ -632,6 +716,8 @@ class AppointmentSystem(QMainWindow):
                 item = QTableWidgetItem(str(query.value(col)))
                 if col == 11:  # 金额列右对齐
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                elif col == 5 or col == 4:
+                    item = QTableWidgetItem(str(self.decrypt(query.value(col))))
                 self.appointment_table.setItem(row, col, item)
 
         # 设置时间状态颜色
@@ -686,7 +772,12 @@ class AppointmentSystem(QMainWindow):
             return
 
         # 获取所有字段值
-        data = [query.value(i) for i in range(13)]
+        data = []
+        for i in range(13):
+            val = query.value(i)
+            if i == 4 or i == 5:
+                val = self.decrypt(val)
+            data.append(val)
         data[10] = "是" if data[10] else "否"  # 转换首次登记状态
 
         # 显示编辑对话框
@@ -697,8 +788,8 @@ class AppointmentSystem(QMainWindow):
                 "name": dialog.name_edit.text().strip(),
                 "gender": dialog.gender_combo.currentText(),
                 "age": dialog.age_edit.value(),
-                "id_number": dialog.id_edit.text().replace(" ", ""),
-                "phone": dialog.phone_edit.text().replace("-", ""),
+                "id_number": dialog.id_edit.text(),
+                "phone": dialog.phone_edit.text(),
                 "time": dialog.time_edit.dateTime().toString("yyyy-MM-dd HH:mm"),
                 "service": dialog.service_edit.toPlainText(),
                 "designer": dialog.designer_combo.currentText(),
@@ -724,7 +815,7 @@ class AppointmentSystem(QMainWindow):
             """)
             params = [
                 new_data["name"], new_data["gender"], new_data["age"],
-                new_data["id_number"], new_data["phone"], new_data["time"],
+                self.encrypt(new_data["id_number"]), self.encrypt(new_data["phone"]), new_data["time"],
                 new_data["service"], new_data["designer"], new_data["dept"],
                 new_data["is_first"], new_data["amount"], new_data["notes"],
                 record_id
@@ -738,19 +829,56 @@ class AppointmentSystem(QMainWindow):
             else:
                 QMessageBox.critical(self, "错误", f"更新失败: {query.lastError().text()}")
 
+    def validate_chinese_id_check_digit(self, id_number):
+        """校验身份证号码的最后一位校验码"""
+        factors = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2]
+        check_code_map = "10X98765432"
+        total = sum(int(id_number[i]) * factors[i] for i in range(17))
+        return check_code_map[total % 11] == id_number[-1].upper()
+
+    def id_check(self,id_number):
+        # 身份证格式校验
+        id_pattern = re.compile(r'^[1-9]\d{5}(18|19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[0-9Xx]$')
+        if not id_pattern.match(id_number):
+            return False
+
+        # 身份证校验码验证
+        if not self.validate_chinese_id_check_digit(id_number):
+            return False
+        return True
+
+    def phone_check(self,phone):
+        pattern = re.compile(r'^1[3-9]\d{9}$')
+        if not pattern.match(phone):
+            return False
+        return True
+    def amount_check(self, amount):
+        # 金额校验
+        if amount.strip() =="":
+            return False
+        if not amount.isdigit() or float(amount) <= 0:
+            return False
+        return True
+
+
     def validate_edit_data(self, data, record_id):
         if not data["name"]:
-            QMessageBox.warning(self, "警告", "客户姓名不能为空")
+            QMessageBox.warning(self, "警告", "客户姓名不能为空！")
             return False
-        if len(data["id_number"]) != 18:
-            QMessageBox.warning(self, "警告", "身份证号必须为18位")
+            # 身份证校验码验证
+        if not self.id_check(data["id_number"]):
+            QMessageBox.warning(self, "警告", "身份证号格式错误！")
             return False
-        if len(data["phone"]) != 11:
-            QMessageBox.warning(self, "警告", "联系电话必须为11位")
+        # 电话号码格式校验
+        if not self.phone_check(data["phone"]):
+            QMessageBox.warning(self, "警告", "请输入有效的11位手机号码！")
             return False
-        if int(data["amount"]) <= 0:
-            QMessageBox.warning(self, "警告", "金额必须大于0")
+
+        # 金额校验
+        if not self.amount_check(data["amount"]):
+            QMessageBox.warning(self, "警告", "项目金额格式错误！")
             return False
+
         return True
 
 
